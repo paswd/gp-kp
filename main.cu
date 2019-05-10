@@ -29,9 +29,9 @@ const double DOUBLE_GEN_ACCURACY = 1000.;
 const double POINTS_GEN_WIDTH = 10.;
 const double POINTS_GEN_HEIGHT = 10.;
 
-const double INERTIA = .5;
-const double PARAM_A1 = .5;
-const double PARAM_A2 = .5;
+const double INERTIA = .08;
+const double PARAM_A1 = .08;
+const double PARAM_A2 = .08;
 
 /*const double FUNC_A[FUNC_MAXIMUMS_CNT][VAR_COUNT] = {
 	{2.54, 6.35},
@@ -65,12 +65,18 @@ struct Position {
 	double Y;
 };
 
+__device__ __host__ void setPosition(Position *pos, double x, double y) {
+	pos->X = x;
+	pos->Y = y;
+}
+
 struct Point {
 	Position Pos;
 
 	double Angle;
 	double Speed;
 	double LocalMin;
+	Position LocalMinPos;
 	uchar4 Pixel;
 	//bool PixelGradient;
 };
@@ -78,6 +84,8 @@ struct Point {
 struct GlobalData {
 	Point *PointsArr;
 	double Min;
+	Position MinPos;
+	double PointSelectCoeff;
 };
 
 GlobalData *GLOBAL;
@@ -118,7 +126,7 @@ __device__ int32_t distance(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
 	return (abs(x1 - x2) + abs(y1 - y2));
 }
 	
-__device__ double fun(double x, double y, double t) {
+__device__ double func(double x, double y, double t) {
 	//return sin(x * x + t) + cos(y * y + t * 0.6) + sin(x * x + y * y + t * 0.3);
 	//x /= 10.;
 	//y /= 10.;
@@ -154,11 +162,11 @@ __device__ int32_t getPixelY(double y, double scale) {
 	return (y / (2.0f * scale) + 0.5f) * (double)(GLOBAL_HEIGHT - 1);
 }
 
-__device__ double fun(int32_t i, int32_t j, double t, double scale)  {
+__device__ double func(int32_t i, int32_t j, double t, double scale)  {
 	double x = getCoordinateX(i, scale);
 	double y = getCoordinateY(j, scale);
 
-	return fun(x * sx + xc, -y * sy + yc, t);	 
+	return func(x * sx + xc, -y * sy + yc, t);	 
 }
 
 __device__ uchar4 get_color(float f) {
@@ -209,7 +217,7 @@ __global__ void drawMap(GlobalData *Global, uchar4* data, double t, double scale
 
 	for(i = idx; i < GLOBAL_WIDTH; i += offsetx) {
 		for(j = idy; j < GLOBAL_HEIGHT; j += offsety) {
-			double f = (fun(i, j, t, scale) - FUNC_MIN) / (FUNC_MAX - FUNC_MIN);
+			double f = (func(i, j, t, scale) - FUNC_MIN) / (FUNC_MAX - FUNC_MIN);
 			//data[j * GLOBAL_WIDTH + i] = getPixel(Global, i, j, f, t, scale);
 			data[j * GLOBAL_WIDTH + i] = get_color(f); //make_uchar4(0, 0, (int)(f * 255), 255);
 		}
@@ -255,6 +263,8 @@ __device__ void generatePoint(Point *point, int32_t *rand_arr, int32_t num) {
 	}
 	point->Speed = 1.;
 	point->LocalMin = 0.;
+	point->LocalMinPos.X = 0.;
+	point->LocalMinPos.Y = 0.;
 	point->Pixel = make_uchar4(0, 255, 0, 0);
 
 
@@ -265,25 +275,68 @@ __global__ void setGlobalDataValues(GlobalData *Global, int32_t *rand_arr) {
 	int32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 	int32_t offsetx = blockDim.x * gridDim.x;
 
+	Global->PointSelectCoeff = rand_arr[0] / DOUBLE_GEN_ACCURACY;
+	Global->MinPos.X = 0.;
+	Global->MinPos.Y = 0.;
+
 	for (int32_t i = idx; i < POINTS_COUNT; i += offsetx) {
 		generatePoint(&(Global->PointsArr[i]), rand_arr, i);
 	}
 }
 
-/*__device__ void changeParams(GlobalData *Global, int32_t n) {
+__device__ void changeParams(GlobalData *Global, int32_t n, double t, double scale) {
 	int32_t i = getPixelX(Global->PointsArr[n].Pos.X, scale);
 	int32_t j = getPixelY(Global->PointsArr[n].Pos.Y, scale);
+	double x = getCoordinateX(i, scale);
+	double y = getCoordinateY(j, scale);
 
-	Global
+	//if (func(i, j, t, scale))
+	double funcRes = func(x, y, t);
+	if (funcRes < Global->PointsArr[n].LocalMin) {
+		Global->PointsArr[n].LocalMin = funcRes;
+		Global->PointsArr[n].LocalMinPos.X = x;
+		Global->PointsArr[n].LocalMinPos.Y = y;
+	}
+	if (Global->PointsArr[n].LocalMin < Global->Min) {
+		Global->Min = Global->PointsArr[n].LocalMin;
+		Global->MinPos = Global->PointsArr[n].LocalMinPos;
+	}
+
+	Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
+		PARAM_A1 * Global->PointSelectCoeff * distance(x, y,
+			Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y) +
+		PARAM_A2 * (1. - Global->PointSelectCoeff) * distance(x, y,
+			Global->MinPos.X, Global->MinPos.Y);
+
+	Position currLocalMin, currGlobalMin, resPos;
+	setPosition(&currLocalMin, Global->PointsArr[n].LocalMinPos.X - x,
+		Global->PointsArr[n].LocalMinPos.Y - y);
+	setPosition(&currGlobalMin, Global->MinPos.X - x,
+		Global->MinPos.Y - y);
+
+	resPos.X = PARAM_A1 * Global->PointSelectCoeff * (currLocalMin.X - x) +
+		PARAM_A2 * (1. - Global->PointSelectCoeff) * (currGlobalMin.X - x);
+	resPos.Y = PARAM_A1 * Global->PointSelectCoeff * (currLocalMin.Y - y) +
+		PARAM_A2 * (1. - Global->PointSelectCoeff) * (currGlobalMin.Y - y);
+
+	double dist = distance(x, y, resPos.X, resPos.Y);
+	resPos.X = resPos.X / dist * Global->PointsArr[n].Speed;
+	resPos.Y = resPos.Y / dist * Global->PointsArr[n].Speed;
+
+	Global->PointsArr[n].Pos.X += resPos.X;
+	Global->PointsArr[n].Pos.Y += resPos.Y;
+	
+	//cuPrintf("Local: %lf ~ %lf : %lf\n", Global->PointsArr[n].LocalMin, Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y);
 }
-__global__ void movePoints(GlobalData *Global) {
+__global__ void movePoints(GlobalData *Global, double t, double scale) {
 	int32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 	int32_t offsetx = blockDim.x * gridDim.x;
 
 	for (int32_t n = idx; n < POINTS_COUNT; n += offsetx) {
-		changeParams(Global, n);
+		changeParams(Global, n, t, scale);
 	}
-}*/
+	//cuPrintf("Global:\n");
+}
 
 __host__ void generateRandValues() {
 	curandGenerator_t rand_gen;
@@ -299,7 +352,7 @@ __host__ void generateRandValues() {
 	CSC(cudaMemcpy(cuda_rand_arr, rand_arr, sizeof(int32_t) * POINTS_COUNT * 3, cudaMemcpyHostToDevice));
 
 	setGlobalDataValues<<<blocks1D, threads1D>>>(GLOBAL, cuda_rand_arr);
-	CSC(cudaFree(cuda_rand_arr));
+	//CSC(cudaFree(cuda_rand_arr));
 }
 
 struct cudaGraphicsResource *res;
@@ -322,6 +375,10 @@ void update() {
 	CSC(cudaGraphicsUnmapResources(1, &res, 0));
 	glutPostRedisplay();
 	t += 0.05;
+	movePoints<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE);
+	GlobalData globalData;
+	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
+	cout << globalData.Min << " ~ " << globalData.MinPos.X << " : " << globalData.MinPos.Y << endl; 
 }
 
 void display() {
