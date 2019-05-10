@@ -1,6 +1,6 @@
 FLAGS=-ccbin clang++-3.8 -std=c++11 --compiler-options -stdlib=libc++ -Wno-deprecated-gpu-targets
 COMPILLER=nvcc
-LIBS=-lm -lGL -lGLU -lGLEW -lglut
+LIBS=-lm -lGL -lGLU -lGLEW -lglut -lcurand
 
 #all: lib start
 all: start
