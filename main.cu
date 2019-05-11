@@ -22,9 +22,9 @@ using namespace std;
 const int32_t GLOBAL_WIDTH = 1024;
 const int32_t GLOBAL_HEIGHT = 648;
 const uint32_t VAR_COUNT = 2;
-const uint32_t FUNC_MAXIMUMS_CNT = 1;
-const uint32_t FUNC_MAXIMUMS_CNT_LIM = 4;
-const uint32_t POINTS_COUNT = 1000;
+const uint32_t FUNC_MAXIMUMS_CNT = 3 ;
+const uint32_t FUNC_MAXIMUMS_CNT_LIM = 5;
+const uint32_t POINTS_COUNT = 500;
 const double SCALE_CHANGE_SPEED = 1.05;
 const double PI = 3.1415926;
 const double EPS = .00001;
@@ -32,13 +32,14 @@ const double POINT_RADIUS = 10.;
 const double DOUBLE_GEN_ACCURACY = 1000.;
 const double POINTS_GEN_WIDTH = 10.;
 const double POINTS_GEN_HEIGHT = 10.;
+const double GRAVITY_PARAM = 10.;
 
 const double INERTIA = .08;
-const double PARAM_A_GLOBAL = .2;
-const double PARAM_A_LOCAL = .03;
+const double PARAM_A_GLOBAL = .3;
+const double PARAM_A_LOCAL = .2;
 
-const double SHIFT_SPEED_X = 0.;
-const double SHIFT_SPEED_Y = 0.;
+const double SHIFT_SPEED_X = .1;
+const double SHIFT_SPEED_Y = .1;
 
 /*const double FUNC_A[FUNC_MAXIMUMS_CNT][VAR_COUNT] = {
 	{2.54, 6.35},
@@ -158,6 +159,7 @@ __device__ __host__ double func(double x, double y, double t) {
 		{.054, 1.035},
 		{3.956, .135},
 		{.535, 1.065},
+		{1.032, .121},
 		{1.032, .121}
 	};
 	double summ = 0.;
@@ -371,6 +373,31 @@ __device__ void calculateLocalMin(GlobalData *Global, int32_t n, double t, doubl
 	}
 }
 
+__device__ void getCollisionVector(GlobalData *Global, Position *res, int32_t n) {
+	res->X = 0.;
+	res->Y = 0.;
+	//Position curr;
+	for (int32_t i = 0; i < n; i++) {
+		if (i == n) {
+			continue;
+		}
+		double dist = distance(Global->PointsArr[i].Pos.X, Global->PointsArr[i].Pos.Y,
+			Global->PointsArr[n].Pos.X, Global->PointsArr[n].Pos.Y);
+		/*curr.X = -(Global->PointsArr[i].Pos.X - Global->PointsArr[n].Pos.X) / pow(dist, 4.);
+		curr.Y = -(Global->PointsArr[i].Pos.Y - Global->PointsArr[n].Pos.Y) / pow(dist, 4.);
+
+		curr.X /= pow(dist, 4.);
+		curr.Y /= pow(dist, 4.);*/
+
+		res->X += -(Global->PointsArr[i].Pos.X - Global->PointsArr[n].Pos.X) / pow(dist, 4.);
+		res->Y += -(Global->PointsArr[i].Pos.Y - Global->PointsArr[n].Pos.Y) / pow(dist, 4.);
+	}
+	res->X /= (double)(POINTS_COUNT - 1) * GRAVITY_PARAM;
+	res->Y /= (double)(POINTS_COUNT - 1) * GRAVITY_PARAM;
+
+	__syncthreads();
+}
+
 __device__ void changeParams(GlobalData *Global, int32_t n, double t, double scale) {
 	double x = Global->PointsArr[n].Pos.X;
 	double y = Global->PointsArr[n].Pos.Y;
@@ -380,34 +407,36 @@ __device__ void changeParams(GlobalData *Global, int32_t n, double t, double sca
 		Global->MinPos = Global->PointsArr[n].LocalMinPos;
 	}*/
 
-	/*Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
+	Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
 		PARAM_A_LOCAL * Global->PointSelectCoeff * distance(x, y,
 			Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y) +
 		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * distance(x, y,
-			Global->MinPos.X, Global->MinPos.Y);*/
-	Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
+			Global->MinPos.X, Global->MinPos.Y);
+	/*Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
 		PARAM_A_LOCAL * 0. * distance(x, y,
 			Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y) +
 		PARAM_A_GLOBAL * (1. - 0.) * distance(x, y,
-			Global->MinPos.X, Global->MinPos.Y);
+			Global->MinPos.X, Global->MinPos.Y);*/
 
-	Position currLocalMin, currGlobalMin, resPos;
+	Position currLocalMin, currGlobalMin, resPos, collision;
 	setPosition(&currLocalMin, Global->PointsArr[n].LocalMinPos.X - x,
-		Global->PointsArr[n].LocalMinPos.Y);
+		Global->PointsArr[n].LocalMinPos.Y - y);
 	setPosition(&currGlobalMin, Global->MinPos.X - x,
-		Global->MinPos.Y);
+		Global->MinPos.Y - y);
 
-	resPos.X = PARAM_A_LOCAL * Global->PointSelectCoeff * (currLocalMin.X - x) +
-		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * (currGlobalMin.X - x);
-	resPos.Y = PARAM_A_LOCAL * Global->PointSelectCoeff * (currLocalMin.Y - y) +
-		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * (currGlobalMin.Y - y);
+	resPos.X = PARAM_A_LOCAL * Global->PointSelectCoeff * currLocalMin.X +
+		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * currGlobalMin.X;
+	resPos.Y = PARAM_A_LOCAL * Global->PointSelectCoeff * currLocalMin.Y +
+		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * currGlobalMin.Y;
 
 	double dist = distance(x, y, resPos.X, resPos.Y);
 	resPos.X = resPos.X / dist * Global->PointsArr[n].Speed;
 	resPos.Y = resPos.Y / dist * Global->PointsArr[n].Speed;
 
-	Global->PointsArr[n].Pos.X += resPos.X;
-	Global->PointsArr[n].Pos.Y += resPos.Y;
+	getCollisionVector(Global, &collision, n);
+
+	Global->PointsArr[n].Pos.X += resPos.X + collision.X;
+	Global->PointsArr[n].Pos.Y += resPos.Y + collision.Y;
 	
 	//cuPrintf("Local: %lf ~ %lf : %lf\n", Global->PointsArr[n].LocalMin, Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y);
 }
@@ -551,7 +580,7 @@ void keys(unsigned char key, int32_t x, int32_t y) {
 
 int main(int argc, char** argv) {
 	//srand(time(NULL));
-	cout <<  "MAX = " << func(.054, 1.035, 0.) << " ~ " << .054 << " : " << 1.035 << endl;
+	//cout <<  "MAX = " << func(.054, 1.035, 0.) << " ~ " << .054 << " : " << 1.035 << endl;
 	/*int n;
 	cin >> n;*/
 	setGlobalData();
