@@ -22,17 +22,19 @@ using namespace std;
 const int32_t GLOBAL_WIDTH = 1024;
 const int32_t GLOBAL_HEIGHT = 648;
 const uint32_t VAR_COUNT = 2;
-const uint32_t FUNC_MAXIMUMS_CNT = 4;
-const uint32_t POINTS_COUNT = 2000;
+const uint32_t FUNC_MAXIMUMS_CNT = 1;
+const uint32_t FUNC_MAXIMUMS_CNT_LIM = 4;
+const uint32_t POINTS_COUNT = 20;
 const double SCALE_CHANGE_SPEED = 1.05;
 const double PI = 3.1415926;
+const double EPS = .00001;
 const double POINT_RADIUS = 10.;
 const double DOUBLE_GEN_ACCURACY = 1000.;
 const double POINTS_GEN_WIDTH = 10.;
 const double POINTS_GEN_HEIGHT = 10.;
 
 const double INERTIA = .08;
-const double PARAM_A_GLOBAL = .09;
+const double PARAM_A_GLOBAL = .2;
 const double PARAM_A_LOCAL = .03;
 
 const double SHIFT_SPEED_X = 0.;
@@ -101,6 +103,7 @@ struct GlobalData {
 
 GlobalData *GLOBAL;
 double *MAX_ARR;
+bool GLOBAL_MOVE = true;
 
 __host__ double fRand(double fMin, double fMax)
 {
@@ -134,19 +137,24 @@ __host__ void destroyGlobalData() {
 	CSC(cudaFree(MAX_ARR));
 }
 
-__device__ double distance(double x1, double y1, double x2, double y2) {
+__device__ __host__ double distance(double x1, double y1, double x2, double y2) {
 	return sqrt(pow(abs(x1 - x2), 2.) + pow(abs(y1 - y2), 2.));
 }
 
-__device__ int32_t distance(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
+__device__ __host__ int32_t distance(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
 	return (abs(x1 - x2) + abs(y1 - y2));
 }
 	
-__device__ double func(double x, double y, double t) {
+__device__ __host__ double func(double x, double y, double t) {
+	/*if (x < EPS && y < EPS) {
+		x += EPS;
+		y += EPS;
+	}*/
 	//return sin(x * x + t) + cos(y * y + t * 0.6) + sin(x * x + y * y + t * 0.3);
 	//x /= 10.;
 	//y /= 10.;
-	double func_a[FUNC_MAXIMUMS_CNT][VAR_COUNT] = {
+	double func_a[FUNC_MAXIMUMS_CNT_LIM][VAR_COUNT] = {
+		//{0., 0.},
 		{.054, 1.035},
 		{3.956, .135},
 		{.535, 1.065},
@@ -154,6 +162,12 @@ __device__ double func(double x, double y, double t) {
 	};
 	double summ = 0.;
 	for (uint32_t i = 0; i < FUNC_MAXIMUMS_CNT; i++) {
+		if (x - func_a[i][0] < EPS) {
+			x += EPS;
+		}
+		if (y - func_a[i][1] < EPS) {
+			y += EPS;
+		}
 		summ += 1. / (pow((x - t * SHIFT_SPEED_X) - func_a[i][0], 2.) + pow((y + t * SHIFT_SPEED_Y) - func_a[i][1], 2.));
 	}
 	//summ = 2.5;
@@ -162,27 +176,57 @@ __device__ double func(double x, double y, double t) {
 	return summ;
 }
 
-__device__ double getCoordinateX(int32_t i, double scale) {
-	return (2.0f * i / (double)(GLOBAL_WIDTH - 1) - 1.0f) * scale;
+/*__host__ double funcDbg(double x, double y, double t) {
+	
+	//return sin(x * x + t) + cos(y * y + t * 0.6) + sin(x * x + y * y + t * 0.3);
+	//x /= 10.;
+	//y /= 10.;
+	double func_a[FUNC_MAXIMUMS_CNT_LIM][VAR_COUNT] = {
+		//{0., 0.},
+		{.054, 1.035},
+		{3.956, .135},
+		{.535, 1.065},
+		{1.032, .121}
+	};
+	double summ = 0.;
+	cout << "X = " << x << endl;
+	cout << "XMod = " << (x - t * SHIFT_SPEED_X) << endl;
+	cout << "XPrePow = " << (x - t * SHIFT_SPEED_X) - func_a[0][0] << endl;
+	cout << "XPow = " << pow((x - t * SHIFT_SPEED_X) - func_a[0][0], 2.) << endl;
+	cout << "Y = " << y << endl;
+	cout << "YMod = " << (y - t * SHIFT_SPEED_Y) << endl;
+	cout << "YPrePow = " << (y - t * SHIFT_SPEED_Y) - func_a[0][1] << endl;
+	cout << "YPow = " << pow((y - t * SHIFT_SPEED_Y) - func_a[0][1], 2.) << endl;
+	for (uint32_t i = 0; i < FUNC_MAXIMUMS_CNT; i++) {
+		summ += 1. / (pow((x - t * SHIFT_SPEED_X) - func_a[i][0], 2.) + pow((y + t * SHIFT_SPEED_Y) - func_a[i][1], 2.));
+	}
+	//summ = 2.5;
+	//cout << summ << endl;
+	//cuPrintf("%lf\n", summ);
+	return summ;
+}*/
+
+__device__ __host__ double getCoordinateX(int32_t i, double scale) {
+	return (2.0f * i / (double)(GLOBAL_WIDTH - 1) - 1.0f) * scale * sx + xc;
 }
 
-__device__ double getCoordinateY(int32_t j, double scale) {
-	return (2.0f * j / (double)(GLOBAL_HEIGHT - 1) - 1.0f) * scale;
+__device__ __host__ double getCoordinateY(int32_t j, double scale) {
+	return (2.0f * j / (double)(GLOBAL_HEIGHT - 1) - 1.0f) * scale * sy + yc;
 }
 
-__device__ int32_t getPixelX(double x, double scale) {
-	return (x / (2.0f * scale) + 0.5f) * (double)(GLOBAL_WIDTH - 1);
+__device__ __host__ int32_t getPixelX(double x, double scale) {
+	return ((x - xc) / (2.0f * scale * sx) + 0.5f) * (double)(GLOBAL_WIDTH - 1);
 }
 
-__device__ int32_t getPixelY(double y, double scale) {
-	return (y / (2.0f * scale) + 0.5f) * (double)(GLOBAL_HEIGHT - 1);
+__device__ __host__ int32_t getPixelY(double y, double scale) {
+	return ((y - yc) / (2.0f * scale * sy) + 0.5f) * (double)(GLOBAL_HEIGHT - 1);
 }
 
-__device__ double func(int32_t i, int32_t j, double t, double scale)  {
+__device__ __host__ double func(int32_t i, int32_t j, double t, double scale)  {
 	double x = getCoordinateX(i, scale);
 	double y = getCoordinateY(j, scale);
 
-	return func(x * sx + xc, -y * sy + yc, t);	 
+	return func(x, y, t);	 
 }
 
 __device__ uchar4 get_color(float f) {
@@ -246,6 +290,16 @@ __global__ void drawPoints(GlobalData *Global, uchar4 *data, double t, double sc
 	int32_t offsetx = blockDim.x * gridDim.x;
 	int32_t i, j;
 
+	if (idx == 0) {
+		int32_t i0 = getPixelX(0., scale);
+		int32_t j0 = getPixelY(0., scale);
+		int32_t i1 = getPixelX(1., scale);
+		int32_t j1 = getPixelY(1., scale);
+
+		data[j0 * GLOBAL_WIDTH + i0] = getPixel(t);
+		data[j1 * GLOBAL_WIDTH + i1] = getPixel(t);
+	}
+
 	for (int32_t n = idx; n < POINTS_COUNT; n += offsetx) {
 		i = getPixelX(Global->PointsArr[n].Pos.X, scale);
 		j = getPixelY(Global->PointsArr[n].Pos.Y, scale);
@@ -307,7 +361,7 @@ __device__ void calculateLocalMin(GlobalData *Global, int32_t n, double t, doubl
 	double y = getCoordinateY(j, scale);
 
 	//if (func(i, j, t, scale))
-	double funcRes = func(x, y, t);
+	double funcRes = func(i, j, t, scale);
 	if (funcRes >= Global->PointsArr[n].LocalMin) {
 		Global->PointsArr[n].LocalMin = funcRes;
 		max_arr[n] = funcRes;
@@ -328,10 +382,15 @@ __device__ void changeParams(GlobalData *Global, int32_t n, double t, double sca
 		Global->MinPos = Global->PointsArr[n].LocalMinPos;
 	}*/
 
-	Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
+	/*Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
 		PARAM_A_LOCAL * Global->PointSelectCoeff * distance(x, y,
 			Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y) +
 		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * distance(x, y,
+			Global->MinPos.X, Global->MinPos.Y);*/
+	Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
+		PARAM_A_LOCAL * 0. * distance(x, y,
+			Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y) +
+		PARAM_A_GLOBAL * (1. - 0.) * distance(x, y,
 			Global->MinPos.X, Global->MinPos.Y);
 
 	Position currLocalMin, currGlobalMin, resPos;
@@ -370,11 +429,13 @@ __global__ void movePoints(GlobalData *Global, double t, double scale, double *m
 	int32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 	int32_t offsetx = blockDim.x * gridDim.x;
 
-	if (idx == 0) {
+	if (idx == 0 && max_arr[max_pos] > Global->Min) {
 		Global->Min = max_arr[max_pos];
 		Global->MinPos.X = Global->PointsArr[max_pos].Pos.X;
 		Global->MinPos.Y = Global->PointsArr[max_pos].Pos.Y;
 	}
+
+	__syncthreads();
 
 	for (int32_t n = idx; n < POINTS_COUNT; n += offsetx) {
 		changeParams(Global, n, t, scale);
@@ -413,6 +474,24 @@ __host__ int32_t findGlobalMaximum() {
 	return max - begin;
 }
 
+void Test() {
+	GlobalData globalData;
+	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
+	Point *tmpPointsArr = globalData.PointsArr;
+	Point pointArr[POINTS_COUNT];
+
+	CSC(cudaMemcpy(pointArr, tmpPointsArr, sizeof(Point) * POINTS_COUNT, cudaMemcpyDeviceToHost));
+
+	//double localMax[POINTS_COUNT];
+
+	//CSC(cudaMemcpy(localMax, MAX_ARR, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));
+	cout << "GLOBAL: " << globalData.Min << " ~ " << globalData.MinPos.X << " : " << globalData.MinPos.Y << endl;
+	for (int32_t i = 0; i < POINTS_COUNT; i++) {
+		cout << pointArr[i].Pos.X << " :: " << pointArr[i].Pos.Y << " - " << func(pointArr[i].Pos.X, pointArr[i].Pos.Y, 0)<< " ~~~ " << pointArr[i].LocalMinPos.X << "\t" << pointArr[i].LocalMinPos.Y << "\t" <<
+			distance(pointArr[i].LocalMinPos.X, pointArr[i].LocalMinPos.Y, 0., 0.) << "\t" << pointArr[i].LocalMin << endl;
+	}
+}
+
 void update() {
 	static double t = 0.0;
 	uchar4* dev_data;
@@ -427,13 +506,16 @@ void update() {
 	CSC(cudaGetLastError());
 	CSC(cudaGraphicsUnmapResources(1, &res, 0));
 	glutPostRedisplay();
-	t += 0.05;
-	calculateLocalMinimums<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE, MAX_ARR);
-	uint32_t max_pos = findGlobalMaximum();
-	movePoints<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE, MAX_ARR, max_pos);
+	if (GLOBAL_MOVE) {
+		t += 0.05;
+		calculateLocalMinimums<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE, MAX_ARR);
+		//Test();
+		uint32_t max_pos = findGlobalMaximum();
+		movePoints<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE, MAX_ARR, max_pos);
+	}
 	GlobalData globalData;
 	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
-	cout << globalData.Min << " ~ " << globalData.MinPos.X << " : " << globalData.MinPos.Y << endl; 
+	//cout << globalData.Min << " ~ " << globalData.MinPos.X << " : " << globalData.MinPos.Y << endl; 
 }
 
 void display() {
@@ -460,11 +542,20 @@ void keys(unsigned char key, int32_t x, int32_t y) {
 		GLOBAL_SCALE *= SCALE_CHANGE_SPEED;
 		return;
 	}
+	if (key == 't') {
+		Test();
+	}
+	if (key == 'p') {
+		GLOBAL_MOVE = !GLOBAL_MOVE;
+	}
 }
 
 
 int main(int argc, char** argv) {
-	
+	//srand(time(NULL));
+	cout <<  "MAX = " << func(.054, 1.035, 0.) << " ~ " << .054 << " : " << 1.035 << endl;
+	/*int n;
+	cin >> n;*/
 	setGlobalData();
 	generateRandValues();
 
