@@ -24,7 +24,7 @@ const int32_t GLOBAL_HEIGHT = 648;
 const uint32_t VAR_COUNT = 2;
 const uint32_t FUNC_MAXIMUMS_CNT = 1;
 const uint32_t FUNC_MAXIMUMS_CNT_LIM = 4;
-const uint32_t POINTS_COUNT = 20;
+const uint32_t POINTS_COUNT = 1000;
 const double SCALE_CHANGE_SPEED = 1.05;
 const double PI = 3.1415926;
 const double EPS = .00001;
@@ -290,7 +290,7 @@ __global__ void drawPoints(GlobalData *Global, uchar4 *data, double t, double sc
 	int32_t offsetx = blockDim.x * gridDim.x;
 	int32_t i, j;
 
-	if (idx == 0) {
+	/*if (idx == 0) {
 		int32_t i0 = getPixelX(0., scale);
 		int32_t j0 = getPixelY(0., scale);
 		int32_t i1 = getPixelX(1., scale);
@@ -298,7 +298,7 @@ __global__ void drawPoints(GlobalData *Global, uchar4 *data, double t, double sc
 
 		data[j0 * GLOBAL_WIDTH + i0] = getPixel(t);
 		data[j1 * GLOBAL_WIDTH + i1] = getPixel(t);
-	}
+	}*/
 
 	for (int32_t n = idx; n < POINTS_COUNT; n += offsetx) {
 		i = getPixelX(Global->PointsArr[n].Pos.X, scale);
@@ -372,10 +372,8 @@ __device__ void calculateLocalMin(GlobalData *Global, int32_t n, double t, doubl
 }
 
 __device__ void changeParams(GlobalData *Global, int32_t n, double t, double scale) {
-	int32_t i = getPixelX(Global->PointsArr[n].Pos.X, scale);
-	int32_t j = getPixelY(Global->PointsArr[n].Pos.Y, scale);
-	double x = getCoordinateX(i, scale);
-	double y = getCoordinateY(j, scale);
+	double x = Global->PointsArr[n].Pos.X;
+	double y = Global->PointsArr[n].Pos.Y;
 
 	/*if (Global->PointsArr[n].LocalMin < Global->Min) {
 		Global->Min = Global->PointsArr[n].LocalMin;
@@ -395,9 +393,9 @@ __device__ void changeParams(GlobalData *Global, int32_t n, double t, double sca
 
 	Position currLocalMin, currGlobalMin, resPos;
 	setPosition(&currLocalMin, Global->PointsArr[n].LocalMinPos.X - x,
-		Global->PointsArr[n].LocalMinPos.Y - y);
+		Global->PointsArr[n].LocalMinPos.Y);
 	setPosition(&currGlobalMin, Global->MinPos.X - x,
-		Global->MinPos.Y - y);
+		Global->MinPos.Y);
 
 	resPos.X = PARAM_A_LOCAL * Global->PointSelectCoeff * (currLocalMin.X - x) +
 		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * (currGlobalMin.X - x);
