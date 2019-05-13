@@ -483,12 +483,12 @@ void update() {
 	uchar4* dev_data;
 	size_t size;
 	CSC(cudaGraphicsMapResources(1, &res, 0));
-	cudaPrintfInit();
+	//cudaPrintfInit();
 	CSC(cudaGraphicsResourceGetMappedPointer((void**) &dev_data, &size, res));
 	drawMap<<<blocks2D, threads2D>>>(GLOBAL, dev_data, t_func, GLOBAL_SCALE);
 	drawPoints<<<blocks1D, threads1D>>>(GLOBAL, dev_data, t_points, GLOBAL_SCALE);
-	cudaPrintfDisplay(stdout, true);
-    cudaPrintfEnd();
+	//cudaPrintfDisplay(stdout, true);
+    //cudaPrintfEnd();
 	CSC(cudaGetLastError());
 	CSC(cudaGraphicsUnmapResources(1, &res, 0));
 	glutPostRedisplay();
