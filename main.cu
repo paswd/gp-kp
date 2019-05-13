@@ -24,7 +24,7 @@ const int32_t GLOBAL_HEIGHT = 648;
 const uint32_t VAR_COUNT = 2;
 const uint32_t FUNC_MAXIMUMS_CNT = 3 ;
 const uint32_t FUNC_MAXIMUMS_CNT_LIM = 5;
-const uint32_t POINTS_COUNT = 500.;
+const uint32_t POINTS_COUNT = 100.;
 const double SCALE_CHANGE_SPEED = 1.05;
 const double PI = 3.1415926;
 const double EPS = .00001;
@@ -42,6 +42,11 @@ const double PARAM_A_LOCAL = .2;
 
 const double SHIFT_SPEED_X = .5;
 const double SHIFT_SPEED_Y = .5;
+
+const double GLOBAL_SCALE_MIN = .005;
+const double GLOBAL_SCALE_MAX = 100.;
+
+const double FUNC_DIFF = .05;
 
 /*const double FUNC_A[FUNC_MAXIMUMS_CNT][VAR_COUNT] = {
 	{2.54, 6.35},
@@ -62,9 +67,7 @@ dim3 blocks1D(1024), threads1D(256);
 } while (0)
 
 
-const double 	xc = 0.0f,
-				yc = 0.0f,
-				sx = 5.0f,
+const double 	sx = 5.0f,
 				sy = sx * GLOBAL_HEIGHT / GLOBAL_WIDTH,
 				FUNC_MIN = 0.,
 				FUNC_MAX = .84;
@@ -229,7 +232,7 @@ __device__ __host__ double getCoordinateX(int32_t i, double scale, Position shif
 }
 
 __device__ __host__ double getCoordinateY(int32_t j, double scale, Position shift) {
-	return (2.0f * j / (double)(GLOBAL_HEIGHT - 1) - 1.0f) * scale * sy - shift.Y;
+	return -((2.0f * j / (double)(GLOBAL_HEIGHT - 1) - 1.0f) * scale * sy - shift.Y);
 }
 
 __device__ __host__ int32_t getPixelX(double x, double scale, Position shift) {
@@ -237,7 +240,7 @@ __device__ __host__ int32_t getPixelX(double x, double scale, Position shift) {
 }
 
 __device__ __host__ int32_t getPixelY(double y, double scale, Position shift) {
-	return ((y + shift.Y) / (2.0f * scale * sy) + 0.5f) * (double)(GLOBAL_HEIGHT - 1);
+	return (((-y) + shift.Y) / (2.0f * scale * sy) + 0.5f) * (double)(GLOBAL_HEIGHT - 1);
 }
 
 __device__ __host__ double func(int32_t i, int32_t j, double t, double scale, Position shift)  {
@@ -500,8 +503,8 @@ __global__ void movePoints(GlobalData *Global, double t, double scale, double *m
 			pos_x[n] = Global->PointsArr[n].Pos.X;
 			pos_y[n] = Global->PointsArr[n].Pos.Y;
 		} else {
-			pos_x[n] = 0.;
-			pos_y[n] = 0.;
+			pos_x[n] = Global->CurrCenter.X;
+			pos_y[n] = Global->CurrCenter.Y;
 		}
 		changeParams(Global, n, t, scale);
 	}
@@ -577,23 +580,31 @@ __host__ void calculateSummTest(double *arr) {
 }
 
 void updateCenter() {
-	//thrust::device_ptr <double> begin_x = thrust::device_pointer_cast(POS_X);
-	//thrust::device_ptr <double> begin_y = thrust::device_pointer_cast(POS_Y);
-	//calculateSumm<<<blocks1D, threads1D>>>(POS_X);
-	//calculateSumm<<<blocks1D, threads1D>>>(POS_Y);
-	/*double pos_x[POINTS_COUNT];
-	double pos_y[POINTS_COUNT];
+	Comparator cmp;
+	thrust::device_ptr <double> begin = thrust::device_pointer_cast(POS_X);
+	thrust::device_ptr <double> max_x = thrust::max_element(
+		begin,
+		begin + POINTS_COUNT, cmp);
+	int32_t max_pos_x = max_x - begin;
+	double val_x[POINTS_COUNT];
+	CSC(cudaMemcpy(&val_x, POS_X, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));
 
-	CSC(cudaMemcpy(pos_x, POS_X, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));
-	CSC(cudaMemcpy(pos_y, POS_Y, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));*/
-
-	/*calculateSummTest(pos_x);
-	calculateSummTest(pos_y);*/
-	cout << "TEST" << endl;
+	cout << "MAX = " << val_x[max_pos_x] << endl;
 	thrust::device_vector<double> vect_x(POS_X, POS_X + POINTS_COUNT);
 	thrust::device_vector<double> vect_y(POS_Y, POS_Y + POINTS_COUNT);
 	double summ_x = thrust::reduce(vect_x.begin(), vect_x.end());
 	double summ_y = thrust::reduce(vect_y.begin(), vect_y.end());
+
+	double pos_x[POINTS_COUNT];
+	double pos_y[POINTS_COUNT];
+
+	CSC(cudaMemcpy(pos_x, POS_X, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));
+	CSC(cudaMemcpy(pos_y, POS_Y, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));
+
+	cout << pos_x[0] << " : " << pos_y[0] << endl;
+	cout << pos_x[1] << " : " << pos_y[1] << endl;
+	cout << "----------" << endl;
+
 	//summ_x = 0.;
 	//summ_y = 0.;
 	//cout << summ_x << " " << summ_y << endl;
@@ -607,6 +618,7 @@ void updateCenter() {
 		summ_y / POINTS_COUNT
 		);
 	cout << new_center.X << " : " << new_center.Y << endl;
+	cout << "============" << endl;
 	GlobalData globalData;
 	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
 	if (!isVisible(
@@ -640,14 +652,15 @@ void Test() {
 }
 
 void update() {
-	static double t = 0.0;
+	static double t_func = 0.;
+	static double t_points = 0.;
 	uchar4* dev_data;
 	size_t size;
 	CSC(cudaGraphicsMapResources(1, &res, 0));
 	cudaPrintfInit();
 	CSC(cudaGraphicsResourceGetMappedPointer((void**) &dev_data, &size, res));
-	drawMap<<<blocks2D, threads2D>>>(GLOBAL, dev_data, t, GLOBAL_SCALE);
-	drawPoints<<<blocks1D, threads1D>>>(GLOBAL, dev_data, t, GLOBAL_SCALE);
+	drawMap<<<blocks2D, threads2D>>>(GLOBAL, dev_data, t_func, GLOBAL_SCALE);
+	drawPoints<<<blocks1D, threads1D>>>(GLOBAL, dev_data, t_points, GLOBAL_SCALE);
 	cudaPrintfDisplay(stdout, true);
     cudaPrintfEnd();
 	CSC(cudaGetLastError());
@@ -655,12 +668,13 @@ void update() {
 	glutPostRedisplay();
 	if (GLOBAL_MOVE) {
 		if (MOVE_FUNCTION) {
-			t += 0.05;
+			t_func += FUNC_DIFF;
 		}
-		calculateLocalMinimums<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE, MAX_ARR);
+		t_points += FUNC_DIFF;
+		calculateLocalMinimums<<<blocks1D, threads1D>>>(GLOBAL, t_func, GLOBAL_SCALE, MAX_ARR);
 		//Test();
 		uint32_t max_pos = findGlobalMaximum();
-		movePoints<<<blocks1D, threads1D>>>(GLOBAL, t, GLOBAL_SCALE, MAX_ARR, max_pos, POS_X, POS_Y);
+		movePoints<<<blocks1D, threads1D>>>(GLOBAL, t_func, GLOBAL_SCALE, MAX_ARR, max_pos, POS_X, POS_Y);
 		updateCenter();
 	}
 	GlobalData globalData;
@@ -685,11 +699,15 @@ void keys(unsigned char key, int32_t x, int32_t y) {
 	}
 	//cout << key << endl;
 	if (key == '+') {
-		GLOBAL_SCALE /= SCALE_CHANGE_SPEED;
+		if (!(GLOBAL_SCALE < GLOBAL_SCALE_MIN)) {
+			GLOBAL_SCALE /= SCALE_CHANGE_SPEED;
+		}
 		return;
 	}
 	if (key == '-') {
-		GLOBAL_SCALE *= SCALE_CHANGE_SPEED;
+		if (!(GLOBAL_SCALE > GLOBAL_SCALE_MAX)) {
+			GLOBAL_SCALE *= SCALE_CHANGE_SPEED;
+		}
 		return;
 	}
 	if (key == 't') {
