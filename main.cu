@@ -431,7 +431,7 @@ __host__ int32_t findGlobalMaximum() {
 	return max - begin;
 }
 
-void updateCenter() {
+void updateCenter(bool if_invisible) {
 	thrust::device_vector<double> vect_x(POS_X, POS_X + POINTS_COUNT);
 	thrust::device_vector<double> vect_y(POS_Y, POS_Y + POINTS_COUNT);
 	
@@ -450,7 +450,7 @@ void updateCenter() {
 	if (!isVisible(
 		getPixelX(new_center.X, GLOBAL_SCALE, globalData.CurrCenter),
 		getPixelY(new_center.Y, GLOBAL_SCALE, globalData.CurrCenter)
-		)) {
+		) || !if_invisible) {
 		globalData.CurrCenter = new_center;
 		CSC(cudaMemcpy(GLOBAL, &globalData, sizeof(GlobalData), cudaMemcpyHostToDevice));
 		//cout << "INVISIBLE" << endl;
@@ -501,7 +501,7 @@ void update() {
 		
 		uint32_t max_pos = findGlobalMaximum();
 		movePoints<<<blocks1D, threads1D>>>(GLOBAL, t_func, GLOBAL_SCALE, MAX_ARR, max_pos, POS_X, POS_Y);
-		updateCenter();
+		updateCenter(true);
 	}
 	GlobalData globalData;
 	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
@@ -547,6 +547,9 @@ void keys(unsigned char key, int32_t x, int32_t y) {
 	if (key == 'm') {
 		MOVE_FUNCTION = !MOVE_FUNCTION;
 		return;
+	}
+	if (key == 'c') {
+		updateCenter(false);
 	}
 }
 
