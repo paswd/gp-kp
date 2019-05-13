@@ -15,7 +15,7 @@
 #include <curand_kernel.h>
 #include <thrust/extrema.h>
 #include <thrust/device_vector.h>
-#include "../lib/cuPrintf.cu"
+//#include "../lib/cuPrintf.cu"
 
 using namespace std;
 
