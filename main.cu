@@ -15,7 +15,7 @@
 #include <curand_kernel.h>
 #include <thrust/extrema.h>
 #include <thrust/device_vector.h>
-//#include "../lib/cuPrintf.cu"
+#include "../lib/cuPrintf.cu"
 
 using namespace std;
 
@@ -24,21 +24,21 @@ const int32_t GLOBAL_HEIGHT = 648;
 const uint32_t VAR_COUNT = 2;
 const uint32_t FUNC_MAXIMUMS_CNT = 3 ;
 const uint32_t FUNC_MAXIMUMS_CNT_LIM = 5;
-const uint32_t POINTS_COUNT = 100.;
+const uint32_t POINTS_COUNT = 2000;
 const double SCALE_CHANGE_SPEED = 1.05;
 const double PI = 3.1415926;
 const double EPS = .00001;
 const double DOUBLE_GEN_ACCURACY = 1000.;
 const double POINTS_GEN_WIDTH = 10.;
 const double POINTS_GEN_HEIGHT = 10.;
-const double GRAVITY_PARAM = 10.;
+const double GRAVITY_PARAM = 1.;
 const double DIST_LIM = 10.;
 const double MOVING_PARAM_X = 5.;
 const double MOVING_PARAM_Y = 5.;
 
-const double INERTIA = .08;
+const double INERTIA = .07;
 const double PARAM_A_GLOBAL = .3;
-const double PARAM_A_LOCAL = .2;
+const double PARAM_A_LOCAL = .3;
 
 const double SHIFT_SPEED_X = .5;
 const double SHIFT_SPEED_Y = .5;
@@ -47,6 +47,9 @@ const double GLOBAL_SCALE_MIN = .005;
 const double GLOBAL_SCALE_MAX = 100.;
 
 const double FUNC_DIFF = .05;
+
+const double COLLISION_FORCE_COEFF = .4;
+const double MAX_SPEED = .8;
 
 dim3 blocks2D(32, 32), threads2D(16, 16);
 dim3 blocks1D(1024), threads1D(256);
@@ -85,6 +88,7 @@ __device__ __host__ void setPosition(Position *pos, double x, double y) {
 
 struct Point {
 	Position Pos;
+	Position CurrMovement;
 
 	double Angle;
 	double Speed;
@@ -146,8 +150,22 @@ __host__ void destroyGlobalData() {
 	CSC(cudaFree(POS_Y));
 }
 
+__device__ __host__ double sign(double num) {
+	return (num < 0 ? -1 : 1);
+}
+
+__device__ __host__ void setLimit(double *num, double limit) {
+	if (abs(*num) > limit) {
+		*num = limit * sign(*num);
+	}
+}
+
 __device__ __host__ double distance(double x1, double y1, double x2, double y2) {
 	return sqrt(pow(abs(x1 - x2), 2.) + pow(abs(y1 - y2), 2.));
+}
+
+__device__ __host__ double distance(double x, double y) {
+	return distance(x, y, 0., 0.);
 }
 
 __device__ __host__ int32_t distance(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
@@ -276,6 +294,8 @@ __device__ void generatePoint(Point *point, int32_t *rand_arr, int32_t num) {
 	point->LocalMinPos.X = 0.;
 	point->LocalMinPos.Y = 0.;
 	point->Pixel = make_uchar4(0, 255, 0, 0);
+	point->CurrMovement.X = 0;
+	point->CurrMovement.Y = 0;
 }
 
 __global__ void setGlobalDataValues(GlobalData *Global, int32_t *rand_arr) {
@@ -318,13 +338,16 @@ __device__ void getCollisionVector(GlobalData *Global, Position *res, int32_t n)
 			continue;
 		}
 		double dist = distance(Global->PointsArr[i].Pos.X, Global->PointsArr[i].Pos.Y,
-			Global->PointsArr[n].Pos.X, Global->PointsArr[n].Pos.Y);
+			Global->PointsArr[n].Pos.X, Global->PointsArr[n].Pos.Y) / COLLISION_FORCE_COEFF;
 
-		res->X += -(Global->PointsArr[i].Pos.X - Global->PointsArr[n].Pos.X) / pow(dist, 4.);
-		res->Y += -(Global->PointsArr[i].Pos.Y - Global->PointsArr[n].Pos.Y) / pow(dist, 4.);
+		res->X += -(Global->PointsArr[i].Pos.X - Global->PointsArr[n].Pos.X) / pow(dist, 3.);
+		res->Y += -(Global->PointsArr[i].Pos.Y - Global->PointsArr[n].Pos.Y) / pow(dist, 3.);
 	}
 	res->X /= (double)(POINTS_COUNT - 1) * GRAVITY_PARAM;
 	res->Y /= (double)(POINTS_COUNT - 1) * GRAVITY_PARAM;
+
+	//setLimit(&res->X, COLLISION_MAX_SPEED);
+	//setLimit(&res->Y, COLLISION_MAX_SPEED);
 
 	__syncthreads();
 }
@@ -333,7 +356,7 @@ __device__ void changeParams(GlobalData *Global, int32_t n, double t, double sca
 	double x = Global->PointsArr[n].Pos.X;
 	double y = Global->PointsArr[n].Pos.Y;
 
-	Global->PointsArr[n].Speed = Global->PointsArr[n].Speed * INERTIA +
+	Global->PointsArr[n].Speed = /*Global->PointsArr[n].Speed * INERTIA +*/
 		PARAM_A_LOCAL * Global->PointSelectCoeff * distance(x, y,
 			Global->PointsArr[n].LocalMinPos.X, Global->PointsArr[n].LocalMinPos.Y) +
 		PARAM_A_GLOBAL * (1. - Global->PointSelectCoeff) * distance(x, y,
@@ -356,8 +379,27 @@ __device__ void changeParams(GlobalData *Global, int32_t n, double t, double sca
 
 	getCollisionVector(Global, &collision, n);
 
-	Global->PointsArr[n].Pos.X += resPos.X + collision.X;
-	Global->PointsArr[n].Pos.Y += resPos.Y + collision.Y;
+	//if (n == 30) {
+		/*cuPrintf("\nPOS: %lf : %lf\nRES: %lf : %lf\nDIST: %lf\nCOLL: %lf : %lf\nCURR: %lf : %lf\n\n\n",
+			Global->PointsArr[n].Pos.X, Global->PointsArr[n].Pos.Y,
+			resPos.X, resPos.Y, dist, collision.X, collision.Y,
+			Global->PointsArr[n].CurrMovement.X, Global->PointsArr[n].CurrMovement.Y);*/
+	//}
+	//__syncthreads();
+	/*if (n == 1) {
+		cuPrintf("============\n\n");
+	}*/
+	Position diff;
+	setPosition(&diff,
+		resPos.X + collision.X + Global->PointsArr[n].CurrMovement.X,
+		resPos.Y + collision.Y + Global->PointsArr[n].CurrMovement.Y);
+	setLimit(&(diff.X), MAX_SPEED);
+	setLimit(&(diff.Y), MAX_SPEED);
+	Global->PointsArr[n].Pos.X += diff.X;
+	Global->PointsArr[n].Pos.Y += diff.Y;
+
+	Global->PointsArr[n].CurrMovement.X = diff.X * INERTIA;
+	Global->PointsArr[n].CurrMovement.Y = diff.Y * INERTIA;
 }
 
 __global__ void calculateLocalMinimums(GlobalData *Global, double t, double scale, double *max_arr) {
@@ -454,9 +496,9 @@ void updateCenter(bool if_invisible) {
 		globalData.CurrCenter = new_center;
 		CSC(cudaMemcpy(GLOBAL, &globalData, sizeof(GlobalData), cudaMemcpyHostToDevice));
 		//cout << "INVISIBLE" << endl;
-	} else {
-		//cout << "  VISIBLE" << endl;
-	}
+	}/* else {
+		cout << "  VISIBLE" << endl;
+	}*/
 }
 
 void Test() {
@@ -472,9 +514,31 @@ void Test() {
 	//CSC(cudaMemcpy(localMax, MAX_ARR, sizeof(double) * POINTS_COUNT, cudaMemcpyDeviceToHost));
 	cout << "GLOBAL: " << globalData.Min << " ~ " << globalData.MinPos.X << " : " << globalData.MinPos.Y << endl;
 	for (int32_t i = 0; i < POINTS_COUNT; i++) {
-		cout << pointArr[i].Pos.X << " :: " << pointArr[i].Pos.Y << " - " << func(pointArr[i].Pos.X, pointArr[i].Pos.Y, 0)<< " ~~~ " << pointArr[i].LocalMinPos.X << "\t" << pointArr[i].LocalMinPos.Y << "\t" <<
-			distance(pointArr[i].LocalMinPos.X, pointArr[i].LocalMinPos.Y, 0., 0.) << "\t" << pointArr[i].LocalMin << endl;
+		if (isVisible(getPixelX(pointArr[i].Pos.X, GLOBAL_SCALE, globalData.CurrCenter),
+				getPixelY(pointArr[i].Pos.Y, GLOBAL_SCALE, globalData.CurrCenter))) {
+			cout << i << " == " << pointArr[i].Pos.X << "\t:: " << pointArr[i].Pos.Y << "\t-> " <<
+				getPixelX(pointArr[i].Pos.X, GLOBAL_SCALE, globalData.CurrCenter) << "\t:: " << 
+				getPixelY(pointArr[i].Pos.Y, GLOBAL_SCALE, globalData.CurrCenter) << endl;
+		}
 	}
+	cout << "=====================" << endl << endl;
+}
+
+void PrintPointData(int32_t n, int32_t t) {
+	GlobalData globalData;
+	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
+	Point *tmpPointsArr = globalData.PointsArr;
+	Point pointArr[POINTS_COUNT];
+	CSC(cudaMemcpy(pointArr, tmpPointsArr, sizeof(Point) * POINTS_COUNT, cudaMemcpyDeviceToHost));
+
+	cout << "TIME:         " << t << endl;
+	cout << "POS:          " << pointArr[n].Pos.X << " : " << pointArr[n].Pos.Y << endl;
+	cout << "DISPLAY POS:  " << getPixelX(pointArr[n].Pos.X, GLOBAL_SCALE, globalData.CurrCenter) << " : " << 
+				getPixelY(pointArr[n].Pos.Y, GLOBAL_SCALE, globalData.CurrCenter) << endl;
+	cout << "SPEED:        " << pointArr[n].Speed << endl;
+	cout << "LOCALMIN:     " << pointArr[n].LocalMin << endl;
+	cout << "LOCALMIN POS: " << pointArr[n].LocalMinPos.X << " : " << pointArr[n].LocalMinPos.Y << endl;
+	cout << "=====================" << endl << endl;
 }
 
 void update() {
@@ -483,12 +547,14 @@ void update() {
 	uchar4* dev_data;
 	size_t size;
 	CSC(cudaGraphicsMapResources(1, &res, 0));
-	//cudaPrintfInit();
+
+	cudaPrintfInit();
+	
 	CSC(cudaGraphicsResourceGetMappedPointer((void**) &dev_data, &size, res));
 	drawMap<<<blocks2D, threads2D>>>(GLOBAL, dev_data, t_func, GLOBAL_SCALE);
 	drawPoints<<<blocks1D, threads1D>>>(GLOBAL, dev_data, t_points, GLOBAL_SCALE);
-	//cudaPrintfDisplay(stdout, true);
-    //cudaPrintfEnd();
+	
+	
 	CSC(cudaGetLastError());
 	CSC(cudaGraphicsUnmapResources(1, &res, 0));
 	glutPostRedisplay();
@@ -502,7 +568,11 @@ void update() {
 		uint32_t max_pos = findGlobalMaximum();
 		movePoints<<<blocks1D, threads1D>>>(GLOBAL, t_func, GLOBAL_SCALE, MAX_ARR, max_pos, POS_X, POS_Y);
 		updateCenter(true);
+		//PrintPointData(95, t_func);
 	}
+
+	cudaPrintfDisplay(stdout, true);
+    cudaPrintfEnd();
 	GlobalData globalData;
 	CSC(cudaMemcpy(&globalData, GLOBAL, sizeof(GlobalData), cudaMemcpyDeviceToHost));
 	//cout << globalData.Min << " ~ " << globalData.MinPos.X << " : " << globalData.MinPos.Y << endl; 
